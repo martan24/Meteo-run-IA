@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Radar des runs météo</title>
+<style>
+:root{--bg:#f4f6f9;--card:#fff;--text:#14202e;--muted:#5d6b7a;--line:#dde3ea;--accent:#0b6bcb;--ok:#18874a;--warn:#b7791f;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0e141b;--card:#171f29;--text:#e8eef5;--muted:#93a1b1;--line:#263241;--accent:#5aa9ff;--ok:#4cc884;--warn:#e0a94a;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#0e141b;--card:#171f29;--text:#e8eef5;--muted:#93a1b1;--line:#263241;--accent:#5aa9ff;--ok:#4cc884;--warn:#e0a94a;color-scheme:dark}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:860px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:1.5rem;margin:0 0 4px}
+.sub{color:var(--muted);margin:0 0 16px}
+.bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px 14px;margin-bottom:16px}
+.bar .clock{font-variant-numeric:tabular-nums;font-weight:600}
+button{font:inherit;cursor:pointer;border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:8px;padding:7px 12px}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:8px}
+.card.fresh{border-color:var(--ok);box-shadow:0 0 0 2px color-mix(in srgb,var(--ok) 25%,transparent)}
+.head{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.name{font-weight:700;font-size:1.1rem}
+.runs{color:var(--muted);font-size:.8rem}
+.row{display:flex;justify-content:space-between;gap:8px;font-size:.92rem}
+.row span:first-child{color:var(--muted)}
+.count{font-size:1.6rem;font-weight:700;font-variant-numeric:tabular-nums;color:var(--accent)}
+.tag{font-size:.75rem;border-radius:99px;padding:2px 8px;background:color-mix(in srgb,var(--ok) 18%,transparent);color:var(--ok);font-weight:600}
+label{font-size:.85rem;color:var(--muted);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+input[type=number]{width:70px;font:inherit;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text)}
+a{color:var(--accent)}
+.note{color:var(--muted);font-size:.85rem;margin-top:18px;border-top:1px solid var(--line);padding-top:12px}
+#toasts{position:fixed;right:12px;top:calc(12px + env(safe-area-inset-top,0px));display:grid;gap:8px;z-index:20;max-width:calc(100% - 24px)}
+.toast{background:var(--ok);color:#fff;padding:10px 14px;border-radius:10px;font-weight:600;box-shadow:0 4px 14px rgba(0,0,0,.25)}
+</style>
+</head>
+<body>
+<main>
+  <h1>Radar des runs météo</h1>
+  <p class="sub">GFS, ICON, AROME : sois prévenu dès qu’un nouveau run devrait être disponible.</p>
+  <div class="bar">
+    <span>Heure UTC : <span class="clock" id="utc"></span></span>
+    <span style="flex:1"></span>
+    <button class="primary" id="enable">Activer les alertes</button>
+    <button id="test">Tester</button>
+  </div>
+  <div class="grid" id="grid"></div>
+  <p class="note">
+    <strong>Comment ça marche :</strong> les horaires sont calculés à partir des heures de run officielles (UTC) et d’un délai de publication moyen, modifiable pour chaque modèle. Ce ne sont pas des détections en direct : la page ne peut pas interroger les serveurs de NOAA, DWD ou Météo-France. Garde l’onglet ouvert pour recevoir les alertes (notification + son). Ajuste le délai quand tu constates l’heure réelle d’apparition des fichiers.
+  </p>
+</main>
+<div id="toasts"></div>
+<script>
+var MODELS=[
+ {id:"gfs",name:"GFS (NOAA)",hours:[0,6,12,18],delay:225,url:"https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/"},
+ {id:"icon",name:"ICON global (DWD)",hours:[0,6,12,18],delay:225,url:"https://opendata.dwd.de/weather/nwp/icon/grib/"},
+ {id:"iconeu",name:"ICON-EU (DWD)",hours:[0,6,12,18],delay:150,url:"https://opendata.dwd.de/weather/nwp/icon-eu/grib/"},
+ {id:"icond2",name:"ICON-D2 (DWD)",hours:[0,3,6,9,12,15,18,21],delay:105,url:"https://opendata.dwd.de/weather/nwp/icon-d2/grib/"},
+ {id:"arome",name:"AROME 1,3 km (Météo-France)",hours:[0,3,6,9,12,15,18,21],delay:210,url:"https://meteo.data.gouv.fr/"}
+];
+var state={};
+function load(){try{state=JSON.parse(localStorage.getItem("meteo-state")||"{}")}catch(e){state={}}}
+function save(){try{localStorage.setItem("meteo-state",JSON.stringify(state))}catch(e){}}
+load();
+MODELS.forEach(function(m){var s=state[m.id]||(state[m.id]={});if(typeof s.delay!=="number")s.delay=m.delay;if(typeof s.on!=="boolean")s.on=true});
+
+function events(m){
+  var d=new Date(),base=Date.UTC(d.getUTCFullYear(),d.getUTCMonth(),d.getUTCDate()),out=[];
+  for(var k=-1;k<=1;k++)m.hours.forEach(function(h){
+    out.push({run:h,t:base+k*864e5+h*36e5+state[m.id].delay*6e4});
+  });
+  return out.sort(function(a,b){return a.t-b.t});
+}
+function pair(m){
+  var now=Date.now(),ev=events(m),last=null,next=null;
+  ev.forEach(function(e){if(e.t<=now)last=e;else if(!next)next=e});
+  return {last:last,next:next};
+}
+function pad(n){return String(n).padStart(2,"0")}
+function hm(t){var d=new Date(t);return pad(d.getHours())+":"+pad(d.getMinutes())}
+function dur(ms){var s=Math.max(0,Math.floor(ms/1000)),h=Math.floor(s/3600),m=Math.floor(s%3600/60);return pad(h)+":"+pad(m)+":"+pad(s%60)}
+
+var grid=document.getElementById("grid"),els={};
+function el(tag,cls,txt){var e=document.createElement(tag);if(cls)e.className=cls;if(txt!=null)e.textContent=txt;return e}
+MODELS.forEach(function(m){
+  var c=el("div","card"),head=el("div","head"),r={};
+  head.appendChild(el("span","name",m.name));
+  r.tag=el("span","tag","");head.appendChild(r.tag);
+  c.appendChild(head);
+  c.appendChild(el("div","runs","Runs : "+m.hours.map(function(h){return pad(h)+"Z"}).join(" · ")));
+  r.count=el("div","count","");c.appendChild(r.count);
+  var r1=el("div","row"),r2=el("div","row");
+  r1.appendChild(el("span",null,"Prochain run"));r.next=el("span");r1.appendChild(r.next);
+  r2.appendChild(el("span",null,"Dernier run dispo"));r.last=el("span");r2.appendChild(r.last);
+  c.appendChild(r1);c.appendChild(r2);
+  var lab=el("label");
+  var cb=document.createElement("input");cb.type="checkbox";cb.checked=state[m.id].on;
+  cb.onchange=function(){state[m.id].on=cb.checked;save()};
+  lab.appendChild(cb);lab.appendChild(document.createTextNode("Alerte · délai (min) "));
+  var num=document.createElement("input");num.type="number";num.min=0;num.max=600;num.value=state[m.id].delay;
+  num.onchange=function(){var v=parseInt(num.value,10);if(isNaN(v)||v<0)v=m.delay;state[m.id].delay=v;save();seen[m.id]=pair(m).last&&pair(m).last.t;tick()};
+  lab.appendChild(num);c.appendChild(lab);
+  var a=el("a",null,"Ouvrir la source officielle ↗");a.href=m.url;a.target="_blank";a.rel="noopener";c.appendChild(a);
+  grid.appendChild(c);r.card=c;els[m.id]=r;
+});
+
+var seen={},freshUntil={};
+MODELS.forEach(function(m){var p=pair(m);seen[m.id]=p.last&&p.last.t});
+
+function beep(){
+  try{var C=window.AudioContext||window.webkitAudioContext,ctx=new C(),o=ctx.createOscillator(),g=ctx.createGain();
+  o.frequency.value=880;g.gain.value=.15;o.connect(g);g.connect(ctx.destination);o.start();o.stop(ctx.currentTime+.35);}catch(e){}
+}
+function toast(msg){
+  var t=el("div","toast",msg);document.getElementById("toasts").appendChild(t);
+  setTimeout(function(){t.remove()},12000);
+}
+function notify(title,body){
+  toast(title+" — "+body);beep();
+  try{if("Notification" in window&&Notification.permission==="granted")new Notification(title,{body:body});}catch(e){}
+  try{if(navigator.vibrate)navigator.vibrate(200)}catch(e){}
+}
+document.getElementById("enable").onclick=function(){
+  try{
+    if("Notification" in window){Notification.requestPermission().then(function(p){
+      toast(p==="granted"?"Alertes système activées":"Notifications système refusées : alertes dans la page + son uniquement");
+    });}else toast("Notifications système indisponibles ici : alertes dans la page + son uniquement");
+  }catch(e){toast("Alertes dans la page + son uniquement")}
+  beep();
+};
+document.getElementById("test").onclick=function(){notify("Test","Voici à quoi ressemblera une alerte.")};
+
+function tick(){
+  var now=Date.now(),d=new Date();
+  document.getElementById("utc").textContent=pad(d.getUTCHours())+":"+pad(d.getUTCMinutes())+":"+pad(d.getUTCSeconds());
+  MODELS.forEach(function(m){
+    var p=pair(m),r=els[m.id];
+    if(p.last&&seen[m.id]!==p.last.t){
+      if(seen[m.id]!=null&&state[m.id].on)notify("Nouveau run "+m.name.split(" (")[0],"Run "+pad(p.last.run)+"Z probablement disponible");
+      seen[m.id]=p.last.t;
+    }
+    var fresh=p.last&&now-p.last.t<30*60e3;
+    r.card.classList.toggle("fresh",!!fresh);
+    r.tag.textContent=fresh?"NOUVEAU":"";
+    r.count.textContent=p.next?dur(p.next.t-now):"—";
+    r.next.textContent=p.next?pad(p.next.run)+"Z · vers "+hm(p.next.t):"—";
+    r.last.textContent=p.last?pad(p.last.run)+"Z · depuis "+hm(p.last.t):"—";
+  });
+}
+tick();setInterval(tick,1000);
+</script>
+</body>
+</html>
